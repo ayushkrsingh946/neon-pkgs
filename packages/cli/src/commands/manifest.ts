@@ -1,6 +1,7 @@
 import type yargs from "yargs";
 import { Parser } from "yargs/helpers";
 import { getCliName } from "../utils/cli_name.js";
+import { REALTIME_COMING_SOON } from "../utils/staging.js";
 
 type CommandModule = {
 	builder: (argv: yargs.Argv) => unknown;
@@ -12,6 +13,11 @@ export type CommandEntry = {
 	aliases?: string[];
 	describe: string;
 	load: () => Promise<CommandModule>;
+	/**
+	 * Staging-only: outside staging the command is hidden from help and fails with this
+	 * message. See `utils/staging.ts`.
+	 */
+	stagingOnly?: string;
 };
 
 /**
@@ -208,11 +214,13 @@ export const commandManifest: CommandEntry[] = [
 		command: "realtime",
 		describe: "Manage Neon Realtime for a branch",
 		load: () => import("./realtime.js"),
+		stagingOnly: REALTIME_COMING_SOON,
 	},
 	{
 		command: "subscribe <query>",
 		describe: "Subscribe to a live SQL query with Neon Realtime",
 		load: () => import("./subscribe.js"),
+		stagingOnly: REALTIME_COMING_SOON,
 	},
 	{
 		command: "functions",
@@ -373,7 +381,14 @@ export const preloadCommand = async (
  * command still runs, because yargs 17 awaits a builder's promise when it runs a command; shell
  * completion does not await it, so a mispredicted completion lists no subcommands.
  */
-export const lazyCommands = commandManifest.map((entry) => ({
+export const lazyCommands = ({ staging }: { staging: boolean }) =>
+	commandManifest.map((entry) =>
+		entry.stagingOnly && !staging
+			? comingSoonCommand(entry, entry.stagingOnly)
+			: lazyCommand(entry),
+	);
+
+const lazyCommand = (entry: CommandEntry) => ({
 	command: entry.command,
 	aliases: entry.aliases,
 	describe: entry.describe,
@@ -390,4 +405,15 @@ export const lazyCommands = commandManifest.map((entry) => ({
 		const mod = loaded.get(entry) ?? (await entry.load());
 		return mod.handler?.(args);
 	},
-}));
+});
+
+const comingSoonCommand = (entry: CommandEntry, message: string) => ({
+	command: `${verbOf(entry)} [args..]`,
+	aliases: entry.aliases,
+	describe: false as const,
+	// Fail in the builder: the bare-parent help middleware runs before any handler.
+	builder: () => {
+		throw new Error(message);
+	},
+	handler: () => {},
+});
