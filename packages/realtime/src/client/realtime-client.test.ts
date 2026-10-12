@@ -25,6 +25,7 @@ type FakeWebSocketListener =
 
 class FakeWebSocket {
 	static instances: FakeWebSocket[] = [];
+	static deferClose = false;
 	readyState = 0;
 	readonly sent: Record<string, unknown>[] = [];
 	readonly protocols: string | string[];
@@ -54,6 +55,12 @@ class FakeWebSocket {
 
 	close(): void {
 		if (this.readyState >= 2) return;
+		this.readyState = 2;
+		if (!FakeWebSocket.deferClose) this.finishClose();
+	}
+
+	finishClose(): void {
+		if (this.readyState === 3) return;
 		this.readyState = 3;
 		this.emit("close", {});
 	}
@@ -76,6 +83,7 @@ class FakeWebSocket {
 
 afterEach(() => {
 	FakeWebSocket.instances = [];
+	FakeWebSocket.deferClose = false;
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
 });
@@ -905,6 +913,32 @@ describe("RealtimeClient", () => {
 		}
 	});
 
+	it("reuses a live ID after the last unsubscribe while its socket is closing", () => {
+		useFakeWebSocket();
+		FakeWebSocket.deferClose = true;
+		const reusedLiveId = "41";
+		const client = createRealtimeClient({ url: "ws://live.test/v1" });
+		const firstSubscription = client.subscribe(query("first"));
+		const firstSocket = connectAndAdmit(reusedLiveId);
+		baselineSync(firstSocket, "first", reusedLiveId);
+
+		firstSubscription.unsubscribe();
+		expect(firstSocket.readyState).toBe(2);
+
+		const replacement = client.subscribe(query("replacement"));
+		expect(FakeWebSocket.instances).toHaveLength(2);
+		const replacementSocket = connectAndAdmit(reusedLiveId);
+		baselineSync(replacementSocket, "replacement", reusedLiveId);
+		expect(replacement.getSnapshot()).toMatchObject({
+			status: "live",
+			data: [{ id: 1, title: "replacement" }],
+		});
+
+		firstSocket.finishClose();
+		expect(replacement.getSnapshot().status).toBe("live");
+		client.close();
+	});
+
 	it("confirms transactions visible to an applied MVCC snapshot", async () => {
 		useFakeWebSocket();
 		const client = createRealtimeClient({
@@ -1418,7 +1452,7 @@ function useFakeWebSocket(): void {
 	vi.stubGlobal("WebSocket", FakeWebSocket);
 }
 
-function connectAndAdmit(): FakeWebSocket {
+function connectAndAdmit(liveId = "41"): FakeWebSocket {
 	const socket = defined(FakeWebSocket.instances.at(-1));
 	socket.open();
 	socket.receive({ type: "ready" });
@@ -1428,7 +1462,7 @@ function connectAndAdmit(): FakeWebSocket {
 	socket.receive({
 		type: "subscribed",
 		request_id: request.request_id,
-		live_id: "41",
+		live_id: liveId,
 		epoch: "1",
 		first_sequence: "1",
 		columns: [
