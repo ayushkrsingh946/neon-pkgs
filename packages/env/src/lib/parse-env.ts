@@ -29,6 +29,7 @@ import {
 	type NeonEnv,
 	type NeonFunctionUrlEnv,
 	type NeonPostgresEnv,
+	type NeonRealtimeEnv,
 	type NeonStorageEnv,
 	parseFunctionBaseUrlKey,
 	type SelectableEnvKey,
@@ -144,6 +145,15 @@ const dataApiEnvSchema = z.object({
 		.min(1, "NEON_DATA_API_URL must not be empty"),
 });
 
+const realtimeEnvSchema = z.object({
+	NEON_REALTIME_URL: z
+		.string({ message: "NEON_REALTIME_URL is missing" })
+		.min(1, "NEON_REALTIME_URL must not be empty"),
+	NEON_REALTIME_SECRET: z
+		.string({ message: "NEON_REALTIME_SECRET is missing" })
+		.min(1, "NEON_REALTIME_SECRET must not be empty"),
+});
+
 const storageEnvSchema = z.object({
 	AWS_ACCESS_KEY_ID: z
 		.string({ message: "AWS_ACCESS_KEY_ID is missing" })
@@ -199,8 +209,8 @@ function isServiceEnabledInput(
  * - You are **inside a deployed Neon Function**, whose env was uploaded at `config apply`.
  *
  * Unlike the old API, `parseEnv` does **not** take a branch name: the secret set is now
- * static (top-level `config.auth` / `config.dataApi`), so it reads those directly without
- * evaluating the per-branch closure.
+ * static (`config.auth` / `config.dataApi` / `config.preview.realtime`), so it reads those
+ * directly without evaluating the per-branch closure.
  *
  * The second argument is a **scope** or a **key filter**:
  * - omitted — *external* scope (app bootstrap, build scripts, your dev machine). Returns the
@@ -317,6 +327,25 @@ export function parseEnv(
 			} satisfies NeonDataApiEnv;
 		} else {
 			for (const issue of dataApi.error.issues)
+				issues.push(issue.message);
+		}
+	}
+
+	if (
+		config.preview?.realtime !== undefined &&
+		config.preview.realtime !== false
+	) {
+		const realtime = realtimeEnvSchema.safeParse({
+			NEON_REALTIME_URL: source.NEON_REALTIME_URL,
+			NEON_REALTIME_SECRET: source.NEON_REALTIME_SECRET,
+		});
+		if (realtime.success) {
+			result.realtime = {
+				url: realtime.data.NEON_REALTIME_URL,
+				secret: realtime.data.NEON_REALTIME_SECRET,
+			} satisfies NeonRealtimeEnv;
+		} else {
+			for (const issue of realtime.error.issues)
 				issues.push(issue.message);
 		}
 	}
@@ -480,6 +509,8 @@ const FILTERABLE_ENV_KEYS: Record<string, readonly [string, string]> = {
 	NEON_AUTH_BASE_URL: ["auth", "baseUrl"],
 	NEON_AUTH_JWKS_URL: ["auth", "jwksUrl"],
 	NEON_DATA_API_URL: ["dataApi", "url"],
+	NEON_REALTIME_URL: ["realtime", "url"],
+	NEON_REALTIME_SECRET: ["realtime", "secret"],
 	AWS_ACCESS_KEY_ID: ["storage", "accessKeyId"],
 	AWS_SECRET_ACCESS_KEY: ["storage", "secretAccessKey"],
 	AWS_ENDPOINT_URL_S3: ["storage", "endpoint"],
