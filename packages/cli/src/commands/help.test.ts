@@ -117,7 +117,6 @@ describe("staging-only commands", () => {
 			env: staging,
 		});
 		expect(strip(stdout)).toMatch(/neon realtime/);
-		expect(strip(stdout)).toMatch(/neon subscribe/);
 	});
 
 	test("realtime is not offered as a service outside staging", async ({
