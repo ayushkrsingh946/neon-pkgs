@@ -8,7 +8,10 @@ import {
 	MAX_TOTAL_BYTES,
 	parseRegistryIndex,
 	parseTemplateItem,
+	type RegistryIndexDocument,
 	type RegistryIndexEntry,
+	type SchemaValidate,
+	type TemplateDocument,
 } from "./registry.js";
 
 export const DEFAULT_REGISTRY_URL =
@@ -152,6 +155,74 @@ export const templateSourcePaths = (template: FunctionTemplate): string[] =>
 	];
 
 const INDEX_FILE = "registry.json";
+const REGISTRY_SCHEMA_FILE = "schemas/registry.schema.json";
+const TEMPLATE_SCHEMA_FILE = "schemas/template.schema.json";
+
+type CompiledSchemas = {
+	registry: SchemaValidate<RegistryIndexDocument>;
+	template: SchemaValidate<TemplateDocument>;
+};
+
+let publishedSchemas: Promise<CompiledSchemas> | undefined;
+
+const compileSchemas = async (
+	registrySchema: object,
+	templateSchema: object,
+): Promise<CompiledSchemas> => {
+	const [{ default: Ajv2020 }, { default: addFormats }] = await Promise.all([
+		import("ajv/dist/2020.js"),
+		import("ajv-formats"),
+	]);
+	const ajv = new Ajv2020({ allErrors: true, strict: false });
+	addFormats(ajv);
+	const wrap = <T>(schema: object): SchemaValidate<T> => {
+		const check = ajv.compile<T>(schema);
+		return {
+			check: (data: unknown): data is T => check(data),
+			errorsText: () => ajv.errorsText(check.errors),
+		};
+	};
+	return {
+		registry: wrap<RegistryIndexDocument>(registrySchema),
+		template: wrap<TemplateDocument>(templateSchema),
+	};
+};
+
+const readPublishedSchemas = async (
+	index: string,
+): Promise<CompiledSchemas> => {
+	const read = urlReader(new URL(index));
+	const registrySchema: unknown = JSON.parse(
+		await read(REGISTRY_SCHEMA_FILE, MAX_JSON_BYTES),
+	);
+	const templateSchema: unknown = JSON.parse(
+		await read(TEMPLATE_SCHEMA_FILE, MAX_JSON_BYTES),
+	);
+	if (
+		typeof registrySchema !== "object" ||
+		registrySchema === null ||
+		typeof templateSchema !== "object" ||
+		templateSchema === null
+	) {
+		throw new RegistryError(
+			"Published Function Registry schemas were not JSON objects.",
+		);
+	}
+	return compileSchemas(registrySchema, templateSchema);
+};
+
+const loadPublishedSchemas = (): Promise<CompiledSchemas> => {
+	publishedSchemas ??= readPublishedSchemas(DEFAULT_REGISTRY_URL)
+		.catch(async (error) => {
+			if (!(error instanceof RegistryError)) throw error;
+			return readPublishedSchemas(GITHUB_REGISTRY_URL);
+		})
+		.catch((error) => {
+			publishedSchemas = undefined;
+			throw error;
+		});
+	return publishedSchemas;
+};
 
 export type RegistryDefaults = {
 	primary?: string;
@@ -216,6 +287,7 @@ const openRegistryAt = async (
 		source.kind === "dir"
 			? INDEX_FILE
 			: posix.basename(source.url.pathname);
+	const schemas = await loadPublishedSchemas();
 	const parse = <T>(path: string, text: string, fn: (text: string) => T) => {
 		try {
 			return fn(text);
@@ -228,7 +300,7 @@ const openRegistryAt = async (
 	const entries = parse(
 		indexPath,
 		await read(indexPath, MAX_JSON_BYTES),
-		parseRegistryIndex,
+		(text) => parseRegistryIndex(text, schemas.registry),
 	);
 
 	const load = async (entry: RegistryIndexEntry): Promise<LoadedTemplate> => {
@@ -240,7 +312,7 @@ const openRegistryAt = async (
 		const template = parse(
 			entry.path,
 			await readFile(entry.path, MAX_JSON_BYTES),
-			(text) => parseTemplateItem(text, entry.id),
+			(text) => parseTemplateItem(text, schemas.template, entry.id),
 		);
 		const dir = posix.dirname(entry.path);
 		const sources = new Map<string, string>();
