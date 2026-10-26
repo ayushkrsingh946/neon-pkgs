@@ -8,7 +8,6 @@ import type { BetterAuthReactAdapterInstance } from "@neon/auth/react/adapters";
 import {
 	BetterAuthVanillaAdapter,
 	type BetterAuthVanillaAdapterInstance,
-	type SupabaseAuthAdapterInstance,
 } from "@neon/auth/vanilla/adapters";
 import {
 	fetchWithToken,
@@ -123,25 +122,6 @@ export type CreateClientExternalConfig<SchemaName> = {
  *
  * @example
  * ```typescript
- * // With SupabaseAuthAdapter for Supabase-compatible API
- * import { createClient, SupabaseAuthAdapter } from '@neon/neon-js';
- *
- * const client = createClient({
- *   auth: {
- *     adapter: SupabaseAuthAdapter,
- *     url: 'https://auth.example.com',
- *   },
- *   dataApi: {
- *     url: 'https://data-api.example.com/rest/v1',
- *   },
- * });
- *
- * // Supabase-compatible auth methods
- * await client.auth.signInWithPassword({ email, password });
- * ```
- *
- * @example
- * ```typescript
  * // Single base URL — auth and Data API URLs are derived automatically.
  * const client = createClient(
  *   'https://ep-xxx.c-2.us-east-2.aws.neon.build/dbname'
@@ -164,7 +144,7 @@ export type CreateClientExternalConfig<SchemaName> = {
  */
 
 /**
- * The value `SupabaseAuthAdapter()` and friends return: a builder that `createClient`
+ * The value `BetterAuthVanillaAdapter()` and friends return: a builder that `createClient`
  * invokes with the auth URL. Distinct from the adapter instance it produces.
  */
 type AdapterBuilder<T extends NeonAuthAdapter> = NonNullable<
@@ -175,7 +155,7 @@ type AdapterBuilder<T extends NeonAuthAdapter> = NonNullable<
  * Helper type to create NeonClient with proper schema resolution.
  * Uses 'public' as the default schema since it's the most common case.
  */
-type CreateClientResult<
+export type CreateClientResult<
 	Database,
 	TAdapter extends NeonAuthAdapter,
 > = NeonClient<Database, DefaultSchemaName<Database>, TAdapter>;
@@ -197,15 +177,6 @@ export function createClient<Database = any>(config: {
 		BetterAuthVanillaAdapterInstance
 	>;
 }): CreateClientResult<Database, BetterAuthVanillaAdapterInstance>;
-
-// Overload: SupabaseAuthAdapter
-// biome-ignore lint/suspicious/noExplicitAny: `any` is the default so an unspecified Database generic stays compatible with the upstream PostgrestClient's untyped schema.
-export function createClient<Database = any>(
-	config: CreateClientConfig<
-		DefaultSchemaName<Database>,
-		SupabaseAuthAdapterInstance
-	>,
-): CreateClientResult<Database, SupabaseAuthAdapterInstance>;
 
 // Overload: BetterAuthVanillaAdapter
 // biome-ignore lint/suspicious/noExplicitAny: `any` is the default so an unspecified Database generic stays compatible with the upstream PostgrestClient's untyped schema.
@@ -235,16 +206,6 @@ export function createClient<Database = any>(
 	>,
 ): CreateClientResult<Database, BetterAuthVanillaAdapterInstance>;
 
-// Overload: String form, SupabaseAuthAdapter
-// biome-ignore lint/suspicious/noExplicitAny: `any` is the default so an unspecified Database generic stays compatible with the upstream PostgrestClient's untyped schema.
-export function createClient<Database = any>(
-	baseUrl: string,
-	options: CreateClientStringOptions<
-		DefaultSchemaName<Database>,
-		SupabaseAuthAdapterInstance
-	> & { auth: { adapter: AdapterBuilder<SupabaseAuthAdapterInstance> } },
-): CreateClientResult<Database, SupabaseAuthAdapterInstance>;
-
 // Overload: String form, BetterAuthVanillaAdapter
 // biome-ignore lint/suspicious/noExplicitAny: `any` is the default so an unspecified Database generic stays compatible with the upstream PostgrestClient's untyped schema.
 export function createClient<Database = any>(
@@ -271,6 +232,26 @@ export function createClient<
 	Database = any,
 	SchemaName extends string & keyof Database = DefaultSchemaName<Database>,
 	TAuthAdapter extends NeonAuthAdapter = BetterAuthVanillaAdapterInstance,
+>(
+	arg1:
+		| string
+		| CreateClientConfig<SchemaName, TAuthAdapter>
+		| CreateClientExternalConfig<SchemaName>,
+	arg2?: CreateClientStringOptions<SchemaName, TAuthAdapter>,
+):
+	| NeonClient<Database, SchemaName, TAuthAdapter>
+	| NeonPostgrestClient<Database, SchemaName> {
+	return createClientImpl<Database, SchemaName, TAuthAdapter>(arg1, arg2);
+}
+
+/**
+ * Adapter-agnostic implementation behind every public `createClient`, so entry points that
+ * pin an adapter (`@neon/neon-js/supabase`) share one code path with the main entry.
+ */
+export function createClientImpl<
+	Database,
+	SchemaName extends string & keyof Database,
+	TAuthAdapter extends NeonAuthAdapter,
 >(
 	arg1:
 		| string
