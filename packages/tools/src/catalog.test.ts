@@ -157,6 +157,191 @@ describe("special mappings", () => {
 		expect(await requests[0].json()).toEqual({ delete_data: true });
 	});
 
+	test("maps the OAuth server and OAuth client tools onto the SDK", async () => {
+		const listedClients = [
+			{
+				client_id: "listed-a",
+				name: "App A",
+				type: "confidential",
+				redirect_uris: ["https://a.example.com/cb"],
+				resources: ["https://res-a.example.com"],
+				skip_consent: false,
+				disabled: false,
+				created_at: "2026-01-02T03:04:05.000Z",
+			},
+			{
+				client_id: "listed-b",
+				name: "App B",
+				type: "public",
+				redirect_uris: ["https://b.example.com/cb"],
+				resources: [],
+				skip_consent: true,
+				disabled: true,
+			},
+		];
+		const serverConfig = {
+			enabled: false,
+			login_page: "https://login.example.com",
+		};
+		const updatedServerConfig = {
+			enabled: true,
+			login_page: "https://login.example.com",
+			mcp: { resource: "https://mcp.example.com" },
+		};
+		const fetchedClient = { client_id: "fetched-id", name: "Fetched" };
+		const updatedClient = { client_id: "updated-id", name: "renamed" };
+		const requests: Request[] = [];
+		const tools = createNeonTools({
+			apiKey: "test-key",
+			tools: [
+				"auth.oauthServer.get",
+				"auth.oauthServer.update",
+				"auth.oauthClients.list",
+				"auth.oauthClients.get",
+				"auth.oauthClients.create",
+				"auth.oauthClients.update",
+				"auth.oauthClients.delete",
+				"auth.oauthClients.rotateSecret",
+			] as const,
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				requests.push(request);
+				if (request.method === "DELETE") {
+					return new Response(null, { status: 204 });
+				}
+				if (
+					request.url.endsWith("/clients") &&
+					request.method === "GET"
+				) {
+					return jsonResponse({ clients: listedClients });
+				}
+				if (request.url.endsWith("/rotate_secret")) {
+					return jsonResponse({ client_secret: "cs_rotated_2b7c" });
+				}
+				if (request.method === "POST") {
+					return jsonResponse({
+						client_id: "created-id",
+						client_secret: "cs_created_8f3a",
+					});
+				}
+				if (request.url.endsWith("/plugins/oauth-provider")) {
+					return jsonResponse(
+						request.method === "PATCH"
+							? updatedServerConfig
+							: serverConfig,
+					);
+				}
+				return jsonResponse(
+					request.method === "PATCH" ? updatedClient : fetchedClient,
+				);
+			},
+		});
+		const ids = { project_id: "project-id", branch_id: "branch-id" };
+		const client = { ...ids, client_id: "clientid" };
+
+		const serverGot = await tools["auth.oauthServer.get"].execute(ids);
+		const serverUpdated = await tools["auth.oauthServer.update"].execute({
+			...ids,
+			enabled: true,
+			login_page: "https://login.example.com",
+			consent_page: "https://consent.example.com",
+			mcp: { resource: "https://mcp.example.com" },
+			resources: [{ identifier: "https://res-server.example.com" }],
+		});
+		const listed = await tools["auth.oauthClients.list"].execute(ids);
+		const clientGot = await tools["auth.oauthClients.get"].execute(client);
+		const created = await tools["auth.oauthClients.create"].execute({
+			...ids,
+			name: "app",
+			redirect_uris: ["https://app.example.com/cb"],
+			type: "confidential",
+			resources: ["https://create-res.example.com"],
+			skip_consent: true,
+		});
+		const clientUpdated = await tools["auth.oauthClients.update"].execute({
+			...client,
+			name: "renamed",
+			redirect_uris: ["https://renamed.example.com/cb"],
+			skip_consent: false,
+			disabled: true,
+			resources: ["https://update-res.example.com"],
+		});
+		const rotated =
+			await tools["auth.oauthClients.rotateSecret"].execute(client);
+		await tools["auth.oauthClients.delete"].execute(client);
+
+		const base = "/projects/project-id/branches/branch-id/auth";
+		expect(
+			requests.map(
+				(r) =>
+					`${r.method} ${new URL(r.url).pathname.replace("/api/v2", "")}`,
+			),
+		).toEqual([
+			`GET ${base}/plugins/oauth-provider`,
+			`PATCH ${base}/plugins/oauth-provider`,
+			`GET ${base}/oauth-provider/clients`,
+			`GET ${base}/oauth-provider/clients/clientid`,
+			`POST ${base}/oauth-provider/clients`,
+			`PATCH ${base}/oauth-provider/clients/clientid`,
+			`POST ${base}/oauth-provider/clients/clientid/rotate_secret`,
+			`DELETE ${base}/oauth-provider/clients/clientid`,
+		]);
+		expect(await requests[1].json()).toEqual({
+			enabled: true,
+			login_page: "https://login.example.com",
+			consent_page: "https://consent.example.com",
+			mcp: { resource: "https://mcp.example.com" },
+			resources: [{ identifier: "https://res-server.example.com" }],
+		});
+		expect(await requests[4].json()).toEqual({
+			name: "app",
+			redirect_uris: ["https://app.example.com/cb"],
+			type: "confidential",
+			resources: ["https://create-res.example.com"],
+			skip_consent: true,
+		});
+		expect(await requests[5].json()).toEqual({
+			name: "renamed",
+			redirect_uris: ["https://renamed.example.com/cb"],
+			skip_consent: false,
+			disabled: true,
+			resources: ["https://update-res.example.com"],
+		});
+		expect(serverGot).toEqual({ data: serverConfig });
+		expect(serverUpdated).toEqual({ data: updatedServerConfig });
+		expect(clientGot).toEqual({ data: fetchedClient });
+		expect(clientUpdated).toEqual({ data: updatedClient });
+		expect(listed).toEqual({ data: listedClients });
+		expect(created).toEqual({
+			data: { client_id: "created-id", client_secret: "cs_created_8f3a" },
+		});
+		expect(rotated).toEqual({ data: { client_secret: "cs_rotated_2b7c" } });
+		for (const id of [
+			"auth.oauthServer.update",
+			"auth.oauthClients.create",
+			"auth.oauthClients.update",
+			"auth.oauthClients.delete",
+			"auth.oauthClients.rotateSecret",
+		] as const) {
+			expect(tools[id].requiresApproval).toBe(true);
+			expect(tools[id].annotations.readOnlyHint).toBe(false);
+		}
+		for (const id of [
+			"auth.oauthClients.delete",
+			"auth.oauthClients.rotateSecret",
+		] as const) {
+			expect(tools[id].annotations.destructiveHint).toBe(true);
+		}
+		for (const id of [
+			"auth.oauthServer.get",
+			"auth.oauthClients.list",
+			"auth.oauthClients.get",
+		] as const) {
+			expect(tools[id].requiresApproval).toBe(false);
+			expect(tools[id].annotations.readOnlyHint).toBe(true);
+		}
+	});
+
 	test("maps apiKeys.create key_name", async () => {
 		const requests: Request[] = [];
 		const tools = createNeonTools({
