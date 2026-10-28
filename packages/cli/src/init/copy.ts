@@ -288,6 +288,26 @@ export const mcpKeyFailedNext = (
 	`${mcp} --oauth`,
 ];
 
+export const AGENTS_NOT_INSTALLED = "not installed";
+
+const TOOLING_FAILED: Record<"plugins" | "skills" | "mcp", string> = {
+	plugins: "The Neon plugin was not installed. Retry with:",
+	skills: "Neon skills were not installed. Retry with:",
+	mcp: "The Neon MCP server was not configured. Retry with:",
+};
+
+export const toolingFailedNext = (
+	failures: readonly {
+		kind: "plugins" | "skills" | "mcp";
+		command: string;
+	}[],
+): string[] =>
+	failures.flatMap((failure, index) => [
+		...(index > 0 ? [""] : []),
+		TOOLING_FAILED[failure.kind],
+		failure.command,
+	]);
+
 export const mcpAfterLinkNext = (mcp: string): string[] => [
 	"Then configure the Neon MCP server for that project:",
 	mcp,
