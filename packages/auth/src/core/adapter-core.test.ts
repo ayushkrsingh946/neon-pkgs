@@ -5,6 +5,7 @@ import {
 } from "../adapters/supabase/auth-interface";
 import type { BetterAuthInstance } from "../types";
 import { FORCE_FETCH_HEADER, NeonAuthAdapterCore } from "./adapter-core";
+import type { AuthHttpError } from "./better-auth-helpers";
 
 /**
  * Test harness that exposes the customFetchImpl from the abstract
@@ -199,6 +200,73 @@ describe("NeonAuthAdapterCore customFetchImpl error normalization", () => {
 			expect(thrown).toBeInstanceOf(AuthApiError);
 			expect((thrown as AuthApiError).status).toBe(409);
 			expect((thrown as AuthApiError).code).toBe("user_already_exists");
+			expect((thrown as AuthHttpError).error).toEqual({
+				message: "User already exists",
+				code: "USER_ALREADY_EXISTS",
+				status: 409,
+			});
+			expect((thrown as AuthHttpError).statusText).toBe("Conflict");
+		});
+
+		test("a non-JSON 502 body yields an empty .error body, statusText and an HTTP message", async () => {
+			const adapter = new TestAdapter({
+				baseURL: "https://auth.example.com",
+			});
+			const customFetchImpl = adapter.getCustomFetchImpl();
+
+			fetchMock.mockResolvedValueOnce(
+				new Response("<html>Bad Gateway</html>", {
+					status: 502,
+					statusText: "Bad Gateway",
+					headers: { "Content-Type": "text/html" },
+				}),
+			);
+
+			let thrown: unknown;
+			try {
+				await customFetchImpl(TEST_URL, {
+					method: "POST",
+					headers: { [FORCE_FETCH_HEADER]: "1" },
+				});
+			} catch (error) {
+				thrown = error;
+			}
+
+			const error = thrown as AuthHttpError;
+			expect(error).toBeInstanceOf(AuthApiError);
+			expect(error.error).toEqual({ status: 502 });
+			expect(error.statusText).toBe("Bad Gateway");
+			expect(error.message).toMatch(/HTTP 502/);
+		});
+
+		test.each([
+			["a JSON array body", "[1,2]"],
+			["a JSON string body", '"oops"'],
+		])("%s yields only the raw status in .error", async (_name, payload) => {
+			const adapter = new TestAdapter({
+				baseURL: "https://auth.example.com",
+			});
+			const customFetchImpl = adapter.getCustomFetchImpl();
+
+			fetchMock.mockResolvedValueOnce(
+				new Response(payload, {
+					status: 500,
+					statusText: "Internal Server Error",
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+
+			let thrown: unknown;
+			try {
+				await customFetchImpl(TEST_URL, {
+					method: "POST",
+					headers: { [FORCE_FETCH_HEADER]: "1" },
+				});
+			} catch (error) {
+				thrown = error;
+			}
+
+			expect((thrown as AuthHttpError).error).toEqual({ status: 500 });
 		});
 
 		test("strips X-Force-Fetch header before sending", async () => {

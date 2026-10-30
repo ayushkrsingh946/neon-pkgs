@@ -17,6 +17,7 @@ export {
 	isAuthApiError,
 	isAuthError,
 } from "@/adapters/supabase/auth-interface";
+export type { AuthHttpError } from "@/core/better-auth-helpers";
 
 export {
 	type NeonAuthLogger,
@@ -175,6 +176,7 @@ export function createNeonAuth(config: NeonAuthConfig) {
 	 *
 	 * @param middlewareConfig - Optional middleware configuration
 	 * @param middlewareConfig.loginUrl - URL to redirect to when not authenticated (default: '/auth/sign-in')
+	 * @param middlewareConfig.publicRoutes - Extra routes that skip authentication; see {@link NeonAuthMiddlewareConfig.publicRoutes}.
 	 * @returns Middleware function for Next.js
 	 *
 	 * @example
@@ -182,7 +184,10 @@ export function createNeonAuth(config: NeonAuthConfig) {
 	 * // proxy.ts
 	 * import { auth } from '@/lib/auth';
 	 *
-	 * export default auth.middleware({ loginUrl: '/auth/sign-in' });
+	 * export default auth.middleware({
+	 *   loginUrl: '/auth/sign-in',
+	 *   publicRoutes: ['/', '/pricing'],
+	 * });
 	 *
 	 * export const config = {
 	 *   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
@@ -190,7 +195,10 @@ export function createNeonAuth(config: NeonAuthConfig) {
 	 * ```
 	 */
 	(server as NeonAuth).middleware = (
-		middlewareConfig?: Pick<NeonAuthMiddlewareConfig, "loginUrl">,
+		middlewareConfig?: Pick<
+			NeonAuthMiddlewareConfig,
+			"loginUrl" | "publicRoutes"
+		>,
 	) => neonAuthMiddleware({ ...config, ...middlewareConfig, log });
 
 	return server as NeonAuth;
@@ -203,6 +211,9 @@ export function createNeonAuth(config: NeonAuthConfig) {
 export type NeonAuth = NeonAuthServer & {
 	handler: () => ReturnType<typeof authApiHandler>;
 	middleware: (
-		middlewareConfig?: Pick<NeonAuthMiddlewareConfig, "loginUrl">,
+		middlewareConfig?: Pick<
+			NeonAuthMiddlewareConfig,
+			"loginUrl" | "publicRoutes"
+		>,
 	) => ReturnType<typeof neonAuthMiddleware>;
 };
