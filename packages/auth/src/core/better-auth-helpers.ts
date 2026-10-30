@@ -92,6 +92,59 @@ export function normalizeBetterAuthError(
 }
 
 /**
+ * Error thrown for a non-OK Better Auth response: the normalized
+ * {@link AuthError} plus the Better Fetch error fields.
+ *
+ * `error` is the parsed JSON response body when that body is a plain object.
+ * For any other body (a JSON array, string or other non-object value, or a
+ * non-JSON body such as an HTML 502 from a proxy) it is `{ status }` only. In
+ * every case `error.status` is the raw HTTP status, replacing any `status` in
+ * the body. `status` on the error
+ * itself stays the normalized (Supabase-style) value.
+ */
+export type AuthHttpError = AuthError & {
+	error: Record<string, unknown> & { status: number };
+	statusText: string;
+};
+
+/**
+ * Builds the error thrown for a non-OK Better Auth response.
+ *
+ * The error is the normalized {@link AuthError} (Supabase-style `.code` and
+ * `.status`), and also carries `statusText` and the parsed response body as
+ * `.error`, which is the shape Better Fetch uses for thrown errors. Consumers that branch
+ * on the raw Better Auth code (for example `@better-auth-ui/*`, which reads
+ * `code` from `.error` when it is an object and only otherwise from the top-level
+ * error) depend on `.error`. They also read `.error.status`, falling back to
+ * `.status`, to pick the 401, 403 and 429 messages, so `.error.status` carries
+ * the raw HTTP status that `.status` does not.
+ */
+export async function createHttpResponseError(
+	response: Response,
+): Promise<AuthHttpError> {
+	const body: unknown = await response
+		.clone()
+		.json()
+		.catch(() => ({}));
+	const record =
+		typeof body === "object" && body !== null && !Array.isArray(body)
+			? (body as { message?: string; code?: string })
+			: {};
+	const error = normalizeBetterAuthError({
+		status: response.status,
+		statusText: response.statusText,
+		message:
+			record.message || `HTTP ${response.status} ${response.statusText}`,
+		code: record.code,
+		body,
+	});
+	return Object.assign(error, {
+		statusText: response.statusText,
+		error: { ...record, status: response.status },
+	});
+}
+
+/**
  * Map HTTP status code to AuthErrorCode
  * Uses message content for disambiguation when status code is ambiguous
  */

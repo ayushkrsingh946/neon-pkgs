@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type {
 	NeonAuthCreateIntegrationResponse,
 	NeonAuthIntegration,
@@ -66,7 +67,14 @@ const INTEGRATION_STATUS_FIELDS = [
 	"jwks_url",
 ] as const;
 
-const OAUTH_PROVIDER_FIELDS = ["id", "type", "client_id"] as const;
+const OAUTH_PROVIDER_LIST_FIELDS = ["id", "type", "client_id"] as const;
+
+const OAUTH_PROVIDER_FIELDS = [
+	...OAUTH_PROVIDER_LIST_FIELDS,
+	"microsoft_tenant_id",
+	"apple_team_id",
+	"apple_key_id",
+] as const;
 
 const ALLOW_LOCALHOST_FIELDS = ["allow_localhost"] as const;
 
@@ -74,7 +82,47 @@ const SUPPORTED_OAUTH_PROVIDERS = [
 	NeonAuthOauthProviderId.Google,
 	NeonAuthOauthProviderId.Github,
 	NeonAuthOauthProviderId.Vercel,
+	NeonAuthOauthProviderId.Microsoft,
+	NeonAuthOauthProviderId.Apple,
 ] as const;
+
+const PROVIDERS_WITHOUT_SHARED_APP = [
+	NeonAuthOauthProviderId.Microsoft,
+	NeonAuthOauthProviderId.Apple,
+] as const;
+
+const OWN_CREDENTIALS_NOTE = `${PROVIDERS_WITHOUT_SHARED_APP.join(" and ")} always need your own credentials`;
+
+const OAUTH_CREDENTIAL_OPTIONS = {
+	"oauth-client-id": {
+		describe: `OAuth client ID from your provider app. For apple, the Services ID. Omit to use Neon's shared OAuth app, where one exists; ${OWN_CREDENTIALS_NOTE}.`,
+		type: "string",
+	},
+	"oauth-client-secret": {
+		describe: `OAuth client secret from your provider app. Omit to use Neon's shared OAuth app, where one exists; ${OWN_CREDENTIALS_NOTE}.`,
+		type: "string",
+	},
+	"oauth-client-secret-file": {
+		describe:
+			"Read the OAuth client secret from a file, for example the apple .p8 private key",
+		type: "string",
+		conflicts: "oauth-client-secret",
+	},
+	"microsoft-tenant-id": {
+		describe:
+			"Tenant ID for the microsoft provider: common, organizations, consumers, a tenant GUID, or a domain",
+		type: "string",
+	},
+	"apple-team-id": {
+		describe: "Apple Developer Team ID (apple only)",
+		type: "string",
+	},
+	"apple-key-id": {
+		describe:
+			"Key ID of the Sign in with Apple private key (apple only). Sent together with a new apple client secret, and only with one",
+		type: "string",
+	},
+} as const;
 
 const DOMAIN_FIELDS = ["domain"] as const;
 
@@ -214,16 +262,7 @@ export const builder = (argv: yargs.Argv) => {
 									choices: SUPPORTED_OAUTH_PROVIDERS,
 									demandOption: true,
 								},
-								"oauth-client-id": {
-									describe:
-										"OAuth client ID from your provider app. Omit to use Neon's shared OAuth app.",
-									type: "string",
-								},
-								"oauth-client-secret": {
-									describe:
-										"OAuth client secret from your provider app. Omit to use Neon's shared OAuth app.",
-									type: "string",
-								},
+								...OAUTH_CREDENTIAL_OPTIONS,
 							}),
 						async (args) => {
 							await oauthProviderAdd(args as any);
@@ -240,16 +279,7 @@ export const builder = (argv: yargs.Argv) => {
 									choices: SUPPORTED_OAUTH_PROVIDERS,
 									demandOption: true,
 								},
-								"oauth-client-id": {
-									describe:
-										"OAuth client ID from your provider app. Omit to use Neon's shared OAuth app.",
-									type: "string",
-								},
-								"oauth-client-secret": {
-									describe:
-										"OAuth client secret from your provider app. Omit to use Neon's shared OAuth app.",
-									type: "string",
-								},
+								...OAUTH_CREDENTIAL_OPTIONS,
 							}),
 						async (args) => {
 							await oauthProviderUpdate(args as any);
@@ -1147,7 +1177,9 @@ const oauthProviderList = async (props: AuthBranchProps) => {
 		printMessage("No OAuth providers are configured for this branch.");
 		return;
 	}
-	writer(props).end(data.providers, { fields: OAUTH_PROVIDER_FIELDS });
+	writer(props).end(data.providers, {
+		fields: OAUTH_PROVIDER_LIST_FIELDS,
+	});
 	const hasShared = data.providers.some(
 		(p) => p.type === NeonAuthOauthProviderType.Shared,
 	);
@@ -1158,13 +1190,63 @@ const oauthProviderList = async (props: AuthBranchProps) => {
 	}
 };
 
+// A secret file is read here, not by yargs, so a missing file fails before any API call.
+const resolveClientSecret = (props: {
+	oauthClientSecret?: string;
+	oauthClientSecretFile?: string;
+}): string | undefined => {
+	const file = props.oauthClientSecretFile;
+	if (file === undefined) return props.oauthClientSecret;
+	let contents: string;
+	try {
+		contents = readFileSync(file, "utf8");
+	} catch (err) {
+		throw new Error(
+			`Could not read --oauth-client-secret-file ${file}: ${(err as Error).message}`,
+		);
+	}
+	// Trailing line endings from `echo` or an editor are not part of the secret.
+	const secret = contents.replace(/[\r\n]+$/, "");
+	if (!secret)
+		throw new Error(`--oauth-client-secret-file ${file} is empty.`);
+	return secret;
+};
+
+// Providers without a shared app need their own credentials, and Apple's span four flags, so the
+// hint names the flags the provider actually needs.
+const sharedProviderRejectedMessage = (providerId: string): string => {
+	let flags: string;
+	switch (providerId) {
+		case NeonAuthOauthProviderId.Apple:
+			flags =
+				"--oauth-client-id <Services ID>, --oauth-client-secret-file <.p8>, --apple-team-id and --apple-key-id";
+			break;
+		case NeonAuthOauthProviderId.Microsoft:
+			flags =
+				"--oauth-client-id and --oauth-client-secret (and optionally --microsoft-tenant-id)";
+			break;
+		default:
+			flags = "--oauth-client-id and --oauth-client-secret";
+	}
+	return (
+		`The "${providerId}" provider requires your own OAuth app credentials.\n` +
+		`Re-run with ${flags} to provide them.\n` +
+		`Create an OAuth app at your provider and use those credentials.`
+	);
+};
+
 const oauthProviderAdd = async (
 	props: AuthBranchProps & {
 		providerId: string;
 		oauthClientId?: string;
 		oauthClientSecret?: string;
+		oauthClientSecretFile?: string;
+		microsoftTenantId?: string;
+		appleTeamId?: string;
+		appleKeyId?: string;
 	},
 ) => {
+	const clientSecret = resolveClientSecret(props);
 	const branchId = await resolveBranch(props);
 	const baseUrlRequest = callbackBaseUrl(props, branchId, props.providerId);
 	let data: Awaited<
@@ -1177,7 +1259,10 @@ const oauthProviderAdd = async (
 			{
 				id: props.providerId as NeonAuthOauthProviderId,
 				client_id: props.oauthClientId,
-				client_secret: props.oauthClientSecret,
+				client_secret: clientSecret,
+				microsoft_tenant_id: props.microsoftTenantId,
+				apple_team_id: props.appleTeamId,
+				apple_key_id: props.appleKeyId,
 			},
 		));
 	} catch (err) {
@@ -1185,11 +1270,7 @@ const oauthProviderAdd = async (
 			isNeonApiError(err) &&
 			codeFromBody(err.data) === "INVALID_SHARED_OAUTH_PROVIDER"
 		) {
-			throw new Error(
-				`The "${props.providerId}" provider requires your own OAuth app credentials.\n` +
-					`Re-run with --oauth-client-id and --oauth-client-secret to provide them.\n` +
-					`Create an OAuth app at your provider and use those credentials.`,
-			);
+			throw new Error(sharedProviderRejectedMessage(props.providerId));
 		}
 		throw err;
 	}
@@ -1202,6 +1283,15 @@ const oauthProviderAdd = async (
 			...(data.client_id
 				? [["Client ID:", data.client_id] as [string, string]]
 				: []),
+			...(data.microsoft_tenant_id
+				? [["Tenant ID:", data.microsoft_tenant_id] as [string, string]]
+				: []),
+			...(data.apple_team_id
+				? [["Team ID:", data.apple_team_id] as [string, string]]
+				: []),
+			...(data.apple_key_id
+				? [["Key ID:", data.apple_key_id] as [string, string]]
+				: []),
 		]);
 	}
 	printCallbackInstructions(props.providerId, await baseUrlRequest);
@@ -1212,8 +1302,26 @@ const oauthProviderUpdate = async (
 		providerId: string;
 		oauthClientId?: string;
 		oauthClientSecret?: string;
+		oauthClientSecretFile?: string;
+		microsoftTenantId?: string;
+		appleTeamId?: string;
+		appleKeyId?: string;
 	},
 ) => {
+	const clientSecret = resolveClientSecret(props);
+	if (props.providerId === NeonAuthOauthProviderId.Apple) {
+		if (clientSecret !== undefined && !props.appleKeyId) {
+			throw new Error(
+				"Changing the apple client secret requires --apple-key-id, the Key ID of the new private key.",
+			);
+		}
+		// The API takes a new private key and its Key ID together, or neither to keep the stored key.
+		if (props.appleKeyId !== undefined && clientSecret === undefined) {
+			throw new Error(
+				"--apple-key-id identifies the new private key, so it requires --oauth-client-secret or --oauth-client-secret-file.",
+			);
+		}
+	}
 	const branchId = await resolveBranch(props);
 	const baseUrlRequest = callbackBaseUrl(props, branchId, props.providerId);
 	let data: Awaited<
@@ -1226,7 +1334,10 @@ const oauthProviderUpdate = async (
 			props.providerId as NeonAuthOauthProviderId,
 			{
 				client_id: props.oauthClientId,
-				client_secret: props.oauthClientSecret,
+				client_secret: clientSecret,
+				microsoft_tenant_id: props.microsoftTenantId,
+				apple_team_id: props.appleTeamId,
+				apple_key_id: props.appleKeyId,
 			},
 		));
 	} catch (err) {
@@ -1234,11 +1345,7 @@ const oauthProviderUpdate = async (
 			isNeonApiError(err) &&
 			codeFromBody(err.data) === "INVALID_SHARED_OAUTH_PROVIDER"
 		) {
-			throw new Error(
-				`The "${props.providerId}" provider requires your own OAuth app credentials.\n` +
-					`Re-run with --oauth-client-id and --oauth-client-secret to provide them.\n` +
-					`Create an OAuth app at your provider and use those credentials.`,
-			);
+			throw new Error(sharedProviderRejectedMessage(props.providerId));
 		}
 		throw err;
 	}
@@ -1250,6 +1357,15 @@ const oauthProviderUpdate = async (
 			["Type:", data.type],
 			...(data.client_id
 				? [["Client ID:", data.client_id] as [string, string]]
+				: []),
+			...(data.microsoft_tenant_id
+				? [["Tenant ID:", data.microsoft_tenant_id] as [string, string]]
+				: []),
+			...(data.apple_team_id
+				? [["Team ID:", data.apple_team_id] as [string, string]]
+				: []),
+			...(data.apple_key_id
+				? [["Key ID:", data.apple_key_id] as [string, string]]
 				: []),
 		]);
 	}
@@ -1267,6 +1383,14 @@ const CALLBACK_INSTRUCTIONS: Record<
 	vercel: {
 		lead: "Create a Vercel App in your Vercel Dashboard and add the following authorization callback URL:",
 		urlLabel: "callback/vercel",
+	},
+	microsoft: {
+		lead: "Register an application in Microsoft Entra ID > App registrations, and add the following redirect URI under the Web platform:",
+		urlLabel: "callback/microsoft",
+	},
+	apple: {
+		lead: "Create a Services ID in the Apple Developer portal, enable Sign in with Apple for it, and add the following return URL (Apple requires HTTPS and does not accept localhost):",
+		urlLabel: "callback/apple",
 	},
 	google: {
 		lead: "Get Google credentials by creating an OAuth client in Google Cloud Console > Credentials, and add the following authorized redirect URL:",
